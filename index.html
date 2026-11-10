@@ -33,13 +33,13 @@
     }
     header h1 { font-size: 1.1rem; margin: 0; }
     main { max-width: 960px; margin: 2rem auto; padding: 0 1rem; }
-    .card {
+    .cartao {
       background: var(--superficie);
       border: 1px solid var(--borda);
       border-radius: 8px;
       padding: 1.5rem;
     }
-    #tela-login .card { max-width: 360px; margin: 4rem auto; }
+    #tela-login .cartao { max-width: 360px; margin: 4rem auto; }
     label { display: block; font-size: 0.9rem; margin: 0.75rem 0 0.25rem; }
     input {
       width: 100%;
@@ -61,10 +61,10 @@
     button.secundario { background: transparent; color: var(--primaria); border: 1px solid var(--primaria); }
     #formulario-login button { width: 100%; margin-top: 1.25rem; }
     .erro { color: var(--perigo); font-size: 0.9rem; min-height: 1.2em; margin-top: 0.75rem; }
-    .status { font-size: 0.85rem; color: var(--suave); }
-    .status .ponto { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; background: var(--suave); margin-right: 0.35rem; }
-    .status.online .ponto { background: var(--sucesso); }
-    .status.offline .ponto { background: var(--perigo); }
+    .situacao { font-size: 0.85rem; color: var(--suave); }
+    .situacao .ponto { display: inline-block; width: 0.6rem; height: 0.6rem; border-radius: 50%; background: var(--suave); margin-right: 0.35rem; }
+    .situacao.disponivel .ponto { background: var(--sucesso); }
+    .situacao.indisponivel .ponto { background: var(--perigo); }
     .oculto { display: none !important; }
   </style>
 </head>
@@ -72,7 +72,7 @@
   <header>
     <h1>Vendas</h1>
     <div style="display:flex; gap:1rem; align-items:center;">
-      <span id="saude" class="status"><span class="ponto"></span><span id="texto-saude">verificando API…</span></span>
+      <span id="saude" class="situacao"><span class="ponto"></span><span id="texto-saude">verificando API…</span></span>
       <span id="info-usuario" class="oculto"></span>
       <button id="sair" class="secundario oculto" type="button">Sair</button>
     </div>
@@ -80,7 +80,7 @@
 
   <main>
     <section id="tela-login" class="oculto">
-      <div class="card">
+      <div class="cartao">
         <h2 style="margin-top:0">Entrar</h2>
         <form id="formulario-login" novalidate>
           <label for="usuario">Usuário</label>
@@ -94,10 +94,10 @@
     </section>
 
     <section id="tela-inicial" class="oculto">
-      <div class="card">
+      <div class="cartao">
         <h2 style="margin-top:0">Página inicial</h2>
         <p>Bem-vindo(a), <strong id="nome-boas-vindas"></strong>.</p>
-        <p class="status">Cadastro, listagem, busca, exportação e dashboard serão adicionados nas próximas issues.</p>
+        <p class="situacao">Cadastro, listagem, busca, exportação e dashboard serão adicionados nas próximas issues.</p>
       </div>
     </section>
   </main>
@@ -110,12 +110,12 @@
       const elemento = $("saude");
       try {
         const resposta = await fetch("/api/web/health");
-        const online = resposta.ok;
-        elemento.classList.toggle("online", online);
-        elemento.classList.toggle("offline", !online);
-        $("texto-saude").textContent = online ? "API online" : "API indisponível";
+        const disponivel = resposta.ok;
+        elemento.classList.toggle("disponivel", disponivel);
+        elemento.classList.toggle("indisponivel", !disponivel);
+        $("texto-saude").textContent = disponivel ? "API disponível" : "API indisponível";
       } catch {
-        elemento.classList.add("offline");
+        elemento.classList.add("indisponivel");
         $("texto-saude").textContent = "API indisponível";
       }
     }

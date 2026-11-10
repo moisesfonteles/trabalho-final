@@ -14,14 +14,15 @@ services:
       retries: 15
 
   api:
-    build: .
+    build:
+      context: .
+      target: producao
     environment:
       URL_BANCO: postgresql://app:${SENHA_BANCO:-app}@db:5432/app
       ADMIN_USUARIO: ${ADMIN_USUARIO:-admin}
       ADMIN_NOME: ${ADMIN_NOME:-Administrador}
       ADMIN_SENHA: ${ADMIN_SENHA:-admin123}
       CHAVE_SECRETA: ${CHAVE_SECRETA:-troque-esta-chave-em-producao}
-      PORTA_API: "8000"
     depends_on:
       db:
         condition: service_healthy
@@ -59,7 +60,9 @@ services:
       retries: 15
 
   testes:
-    build: .
+    build:
+      context: .
+      target: testes
     profiles: ["testes"]
     environment:
       URL_BANCO: postgresql://app:app@db-testes:5432/app_test

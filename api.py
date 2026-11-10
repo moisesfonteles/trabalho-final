@@ -1,41 +1,29 @@
 """API REST (Flask) consumida pela Web e, futuramente, pela CLI."""
 
-import json
-import logging
 import os
-import sys
 import uuid
-from datetime import datetime, timezone
 from functools import wraps
 
 import psycopg
-from flask import Flask, cli, g, jsonify, request
+from flask import Flask, g, jsonify, request
 from itsdangerous import BadSignature, URLSafeTimedSerializer
+from werkzeug.exceptions import HTTPException
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import db
 
 VALIDADE_TOKEN_WEB = 8 * 60 * 60  # 8 horas
 
+# Hash usado quando o usuário não existe, para o login levar o mesmo tempo nos dois casos
+# e não revelar quais usuários estão cadastrados.
+HASH_FICTICIO = generate_password_hash("senha-ficticia")
+
 app = Flask(__name__)
-# Mantém o stdout só com logs JSON: silencia o log de acesso do Werkzeug e o banner do Flask.
-logging.getLogger("werkzeug").disabled = True
-cli.show_server_banner = lambda *_args: None
 
 
 def registrar_log(nivel, origem, operacao, status, mensagem):
-    """Emite uma linha JSON no stdout para a camada de API."""
-    evento = {
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "level": nivel,
-        "layer": "api",
-        "client": origem,
-        "operation": operacao,
-        "status": status,
-        "request_id": g.request_id,
-        "message": mensagem,
-    }
-    print(json.dumps(evento, ensure_ascii=False), file=sys.stdout, flush=True)
+    """Registra um evento da camada de API com o request_id da requisição atual."""
+    db.registrar_log(nivel, origem, operacao, status, g.request_id, mensagem, camada="api")
 
 
 def serializador_web():
@@ -77,6 +65,15 @@ def exigir_autenticacao_web(operacao):
     return decorador
 
 
+@app.errorhandler(Exception)
+def tratar_erro_inesperado(erro):
+    """Responde erros não previstos com JSON e log, em vez da página HTML padrão."""
+    if isinstance(erro, HTTPException):
+        return erro
+    registrar_log("ERROR", "web", request.endpoint or "desconhecida", "error", "Erro inesperado na API")
+    return jsonify(erro="Erro interno"), 500
+
+
 @app.get("/api/web/health")
 def web_saude():
     registrar_log("INFO", "web", "health", "success", "Healthcheck OK")
@@ -85,7 +82,9 @@ def web_saude():
 
 @app.post("/api/web/login")
 def web_login():
-    dados = request.get_json(silent=True) or {}
+    dados = request.get_json(silent=True)
+    if not isinstance(dados, dict):
+        dados = {}
     usuario = dados.get("usuario")
     senha = dados.get("senha")
     if not isinstance(usuario, str) or not isinstance(senha, str) or not usuario or not senha:
@@ -98,7 +97,8 @@ def web_login():
         registrar_log("ERROR", "web", "login", "error", "Falha ao acessar o banco")
         return jsonify(erro="Erro interno"), 500
 
-    if registro is None or not check_password_hash(registro["senha_hash"], senha):
+    senha_valida = check_password_hash(registro["senha_hash"] if registro else HASH_FICTICIO, senha)
+    if registro is None or not senha_valida:
         registrar_log("WARN", "web", "login", "error", "Credenciais inválidas")
         return jsonify(erro="Usuário ou senha inválidos"), 401
 
@@ -120,10 +120,7 @@ def inicializar():
     db.inicializar_banco(os.environ["ADMIN_USUARIO"], os.environ["ADMIN_NOME"], senha_hash)
 
 
-def main():
+def criar_app():
+    """Ponto de entrada do gunicorn (`api:criar_app()`): inicializa o banco e devolve a aplicação."""
     inicializar()
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORTA_API", "8000")))
-
-
-if __name__ == "__main__":  # pragma: no cover
-    main()
+    return app

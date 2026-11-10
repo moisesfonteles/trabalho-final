@@ -25,7 +25,7 @@ docker compose up --build
 Sobe três serviços:
 
 - `db` — PostgreSQL (dados persistidos no volume `dados-banco`);
-- `api` — Flask na porta interna 8000; na inicialização cria as tabelas (`usuario`, `produto`, `venda`), carrega o catálogo de produtos e o usuário inicial;
+- `api` — Flask servido pelo gunicorn na porta interna 8000, sem root e sem as dependências de teste; na inicialização cria as tabelas (`usuario`, `produto`, `venda`), carrega o catálogo de produtos e o usuário inicial;
 - `web` — nginx em <http://localhost:8080>, servindo `index.html` e encaminhando `/api/*` para a API.
 
 Para parar: `docker compose down` (adicione `-v` para apagar os dados).
@@ -47,7 +47,7 @@ As variáveis são lidas do ambiente ou de um arquivo `.env` na raiz (veja `.env
 cp .env.example .env   # edite os valores antes de subir
 ```
 
-A senha **nunca é armazenada em texto puro**: na inicialização a API gera um hash (scrypt, via `werkzeug.security`) e grava apenas o hash na tabela `usuario`. Se `ADMIN_SENHA` ou `ADMIN_NOME` mudarem, os valores são atualizados no próximo start. Senhas e tokens não são registrados em log.
+A senha **nunca é armazenada em texto puro**: na inicialização a API gera um hash (scrypt, via `werkzeug.security`) e grava apenas o hash na tabela `usuario`. Se `ADMIN_SENHA` ou `ADMIN_NOME` mudarem, os valores do usuário `ADMIN_USUARIO` são atualizados no próximo start. Se o próprio `ADMIN_USUARIO` mudar, um novo usuário é criado e o anterior **continua ativo** (não há edição nem remoção de usuários); para descartá-lo, recrie o banco com `docker compose down -v`. Senhas e tokens não são registrados em log.
 
 ### Login
 
@@ -75,7 +75,7 @@ curl -i -X POST http://localhost:8080/api/web/login \
 
 ## Logs
 
-Cada evento é uma linha JSON no stdout, com `timestamp`, `level`, `layer` (`api`/`db`), `client` (`web`/`cli`), `operation`, `status`, `request_id` e `message`. API e banco compartilham o mesmo `request_id` dentro de uma requisição (também devolvido no header `X-Request-ID`). A inicialização do banco usa `client: "system"` e `request_id: "startup"`.
+Cada evento é uma linha JSON no stdout, com `timestamp`, `level`, `layer` (`api`/`db`), `client` (`web`/`cli`), `operation`, `status`, `request_id` e `message`. API e banco compartilham o mesmo `request_id` dentro de uma requisição (também devolvido no header `X-Request-ID`). A inicialização do banco usa `client: "sistema"` e `request_id: "inicializacao"`. Erros não previstos na API viram `500 {"erro": "Erro interno"}` com log `ERROR`.
 
 ```bash
 docker compose logs -f api                           # acompanhar

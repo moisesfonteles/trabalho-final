@@ -24,6 +24,17 @@ def test_registrar_log_emite_linha_json(capsys):
     assert set(evento) == {"timestamp", "level", "layer", "client", "operation", "status", "request_id", "message"}
 
 
+def test_registrar_log_aceita_camada_api(capsys):
+    db.registrar_log("INFO", "web", "login", "success", "req-1", "ok", camada="api")
+    assert json.loads(capsys.readouterr().out.strip())["layer"] == "api"
+
+
+def test_inicializar_banco_registra_origem_sistema(capsys):
+    db.inicializar_banco(USUARIO_TESTE, "Nome", "hash")
+    evento = _ultimo_evento(capsys)
+    assert evento["client"] == "sistema" and evento["request_id"] == "inicializacao"
+
+
 def test_inicializar_banco_e_idempotente_e_atualiza_nome_e_hash():
     db.inicializar_banco(USUARIO_TESTE, "Nome Novo", "hash-novo")
     registro = db.buscar_usuario(USUARIO_TESTE, "req-2", "web")

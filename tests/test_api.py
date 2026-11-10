@@ -50,6 +50,39 @@ def test_login_campos_ausentes(cliente_http):
     assert cliente_http.post("/api/web/login", json={"usuario": USUARIO_TESTE}).status_code == 400
     assert cliente_http.post("/api/web/login", data="não é json").status_code == 400
     assert cliente_http.post("/api/web/login", json={"usuario": 1, "senha": 2}).status_code == 400
+    for corpo in ([1], "x", 5, None):
+        assert cliente_http.post("/api/web/login", json=corpo).status_code == 400
+
+
+def test_login_usuario_inexistente_tambem_verifica_hash(cliente_http, monkeypatch):
+    verificados = []
+    original = api.check_password_hash
+
+    def espiar(senha_hash, senha):
+        verificados.append(senha_hash)
+        return original(senha_hash, senha)
+
+    monkeypatch.setattr(api, "check_password_hash", espiar)
+    resposta = cliente_http.post("/api/web/login", json={"usuario": "ninguem", "senha": "x"})
+    assert resposta.status_code == 401
+    assert verificados == [api.HASH_FICTICIO]
+
+
+def test_erro_inesperado_responde_json_e_registra_log(cliente_http, monkeypatch, capsys):
+    def falhar(*_args):
+        raise KeyError("URL_BANCO")
+
+    monkeypatch.setattr(db, "buscar_usuario", falhar)
+    capsys.readouterr()
+    resposta = cliente_http.post("/api/web/login", json={"usuario": USUARIO_TESTE, "senha": SENHA_TESTE})
+    assert resposta.status_code == 500
+    assert resposta.get_json() == {"erro": "Erro interno"}
+    evento = _eventos(capsys)[-1]
+    assert evento["level"] == "ERROR" and evento["layer"] == "api" and evento["operation"] == "web_login"
+
+
+def test_rota_inexistente_mantem_404(cliente_http):
+    assert cliente_http.get("/api/web/nao-existe").status_code == 404
 
 
 def test_login_erro_no_banco(cliente_http, monkeypatch):
@@ -88,11 +121,8 @@ def test_inicializar_cria_usuario_inicial(monkeypatch):
     assert check_password_hash(registro["senha_hash"], "segredo")
 
 
-def test_main_inicializa_e_executa(monkeypatch):
-    chamadas = {}
-    monkeypatch.setattr(api, "inicializar", lambda: chamadas.setdefault("inicializar", True))
-    monkeypatch.setattr(api.app, "run", lambda **kw: chamadas.setdefault("run", kw))
-    monkeypatch.setenv("PORTA_API", "9999")
-    api.main()
-    assert chamadas["inicializar"] is True
-    assert chamadas["run"] == {"host": "0.0.0.0", "port": 9999}
+def test_criar_app_inicializa_e_devolve_app(monkeypatch):
+    chamadas = []
+    monkeypatch.setattr(api, "inicializar", lambda: chamadas.append("inicializar"))
+    assert api.criar_app() is api.app
+    assert chamadas == ["inicializar"]

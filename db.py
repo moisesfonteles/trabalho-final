@@ -9,12 +9,12 @@ import psycopg
 from psycopg.rows import dict_row
 
 
-def registrar_log(nivel, origem, operacao, status, request_id, mensagem):
-    """Emite uma linha JSON no stdout para a camada de banco."""
+def registrar_log(nivel, origem, operacao, status, request_id, mensagem, camada="db"):
+    """Emite uma linha JSON no stdout. `camada` é `db` ou `api`."""
     evento = {
         "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "level": nivel,
-        "layer": "db",
+        "layer": camada,
         "client": origem,
         "operation": operacao,
         "status": status,
@@ -45,7 +45,7 @@ def obter_conexao():
     return psycopg.connect(os.environ["URL_BANCO"], row_factory=dict_row)
 
 
-def inicializar_banco(usuario, nome, senha_hash, request_id="startup", origem="system"):
+def inicializar_banco(usuario, nome, senha_hash, request_id="inicializacao", origem="sistema"):
     """Cria as tabelas, o catálogo de produtos e o usuário inicial (idempotente)."""
     try:
         with obter_conexao() as conexao:
