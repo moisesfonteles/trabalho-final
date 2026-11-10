@@ -1,0 +1,22 @@
+# Worktrees locais das tarefas
+tmp/
+
+# Configuração local / segredos
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Testes e cobertura
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Editores / SO
+.vscode/
+.idea/
+.DS_Store
