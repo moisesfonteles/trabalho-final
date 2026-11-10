@@ -1,0 +1,67 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${SENHA_BANCO:-app}
+    volumes:
+      - dados-banco:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U app -d app"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  api:
+    build: .
+    environment:
+      URL_BANCO: postgresql://app:${SENHA_BANCO:-app}@db:5432/app
+      ADMIN_USUARIO: ${ADMIN_USUARIO:-admin}
+      ADMIN_NOME: ${ADMIN_NOME:-Administrador}
+      ADMIN_SENHA: ${ADMIN_SENHA:-admin123}
+      CHAVE_SECRETA: ${CHAVE_SECRETA:-troque-esta-chave-em-producao}
+      PORTA_API: "8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    image: nginx:1.27-alpine
+    ports:
+      - "${PORTA_WEB:-8080}:80"
+    volumes:
+      - ./index.html:/usr/share/nginx/html/index.html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+
+  db-testes:
+    image: postgres:16-alpine
+    profiles: ["testes"]
+    environment:
+      POSTGRES_DB: app_test
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U app -d app_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  testes:
+    build: .
+    profiles: ["testes"]
+    environment:
+      URL_BANCO: postgresql://app:app@db-testes:5432/app_test
+      CHAVE_SECRETA: chave-de-teste
+    command: >
+      pytest -q --cov=api --cov=db --cov-report=term-missing --cov-fail-under=100
+    depends_on:
+      db-testes:
+        condition: service_healthy
+
+volumes:
+  dados-banco:
