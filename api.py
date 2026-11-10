@@ -1,7 +1,10 @@
 """API REST (Flask) consumida pela Web e, futuramente, pela CLI."""
 
 import os
+import re
 import uuid
+from datetime import date, datetime, timezone
+from decimal import Decimal, InvalidOperation
 from functools import wraps
 
 import psycopg
@@ -13,6 +16,12 @@ from werkzeug.security import check_password_hash, generate_password_hash
 import db
 
 VALIDADE_TOKEN_WEB = 8 * 60 * 60  # 8 horas
+
+# Limites da venda: mantêm quantidade * valor_unitario dentro de NUMERIC(12, 2) e os ids dentro de INTEGER.
+QUANTIDADE_MAXIMA = 10_000
+VALOR_UNITARIO_MAXIMO = Decimal("100000.00")
+ID_MAXIMO = 2_147_483_647
+FORMATO_DATA = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 # Hash usado quando o usuário não existe, para o login levar o mesmo tempo nos dois casos
 # e não revelar quais usuários estão cadastrados.
@@ -112,6 +121,176 @@ def web_login():
 def web_sessao():
     registrar_log("INFO", "web", "sessao", "success", "Sessão válida")
     return jsonify(usuario=g.usuario, nome=g.nome), 200
+
+
+def validar_venda(dados):
+    """Valida os campos da venda. Retorna (venda, erros), com `erros` indexado pelo nome do campo."""
+    erros = {}
+    venda = {}
+
+    produto_id = dados.get("produto_id")
+    if produto_id is None or produto_id == "":
+        erros["produto_id"] = "Informe o produto."
+    elif isinstance(produto_id, bool) or not isinstance(produto_id, int) or not 1 <= produto_id <= ID_MAXIMO:
+        erros["produto_id"] = "Produto inválido."
+    else:
+        venda["produto_id"] = produto_id
+
+    quantidade = dados.get("quantidade")
+    if quantidade is None or quantidade == "":
+        erros["quantidade"] = "Informe a quantidade."
+    elif isinstance(quantidade, bool) or not isinstance(quantidade, int) or not 1 <= quantidade <= QUANTIDADE_MAXIMA:
+        erros["quantidade"] = f"A quantidade deve ser um número inteiro entre 1 e {QUANTIDADE_MAXIMA}."
+    else:
+        venda["quantidade"] = quantidade
+
+    valor_unitario = dados.get("valor_unitario")
+    if valor_unitario is None or valor_unitario == "":
+        erros["valor_unitario"] = "Informe o valor unitário."
+    else:
+        valor = None
+        if not isinstance(valor_unitario, bool) and isinstance(valor_unitario, (int, float, str)):
+            try:
+                valor = Decimal(str(valor_unitario).strip())
+            except InvalidOperation:
+                valor = None
+        if (
+            valor is None
+            or not valor.is_finite()
+            or not Decimal("0") < valor <= VALOR_UNITARIO_MAXIMO
+            or valor != valor.quantize(Decimal("0.01"))
+        ):
+            erros["valor_unitario"] = (
+                f"O valor unitário deve ser maior que zero, até {VALOR_UNITARIO_MAXIMO}, com no máximo 2 casas decimais."
+            )
+        else:
+            venda["valor_unitario"] = valor
+
+    data_venda = dados.get("data_venda")
+    if data_venda is None or data_venda == "":
+        erros["data_venda"] = "Informe a data da venda."
+    else:
+        data = None
+        if isinstance(data_venda, str) and FORMATO_DATA.fullmatch(data_venda):
+            try:
+                data = date.fromisoformat(data_venda)
+            except ValueError:
+                data = None
+        if data is None:
+            erros["data_venda"] = "Data inválida; use o formato AAAA-MM-DD."
+        elif data > datetime.now(timezone.utc).date():
+            erros["data_venda"] = "A data da venda não pode ser futura."
+        else:
+            venda["data_venda"] = data
+
+    return venda, erros
+
+
+def venda_para_json(linha):
+    return {
+        "id": linha["id"],
+        "produto_id": linha["produto_id"],
+        "produto_nome": linha["produto_nome"],
+        "categoria": linha["categoria"],
+        "quantidade": linha["quantidade"],
+        "valor_unitario": str(linha["valor_unitario"]),
+        "valor_total": str(linha["valor_total"]),
+        "data_venda": linha["data_venda"].isoformat(),
+    }
+
+
+def ler_venda_da_requisicao(operacao):
+    """Lê e valida o corpo JSON. Retorna (venda, None) ou (None, resposta de erro)."""
+    dados = request.get_json(silent=True)
+    if not isinstance(dados, dict):
+        registrar_log("WARN", "web", operacao, "error", "Corpo da requisição não é um objeto JSON")
+        return None, (jsonify(erro="Envie os dados da venda em JSON."), 400)
+    venda, erros = validar_venda(dados)
+    if erros:
+        registrar_log("WARN", "web", operacao, "error", f"Dados inválidos: {', '.join(sorted(erros))}")
+        return None, (jsonify(erro="Dados inválidos.", campos=erros), 422)
+    return venda, None
+
+
+def resposta_produto_inexistente(operacao):
+    registrar_log("WARN", "web", operacao, "error", "Produto inexistente")
+    return jsonify(erro="Dados inválidos.", campos={"produto_id": "Produto não encontrado."}), 422
+
+
+def resposta_venda_nao_encontrada(operacao, id_venda):
+    registrar_log("WARN", "web", operacao, "error", f"Venda {id_venda} não encontrada")
+    return jsonify(erro="Venda não encontrada."), 404
+
+
+def resposta_falha_no_banco(operacao):
+    registrar_log("ERROR", "web", operacao, "error", "Falha ao acessar o banco")
+    return jsonify(erro="Erro interno"), 500
+
+
+@app.get("/api/web/produtos")
+@exigir_autenticacao_web("listar_produtos")
+def web_listar_produtos():
+    try:
+        linhas = db.listar_produtos_web(g.request_id)
+    except psycopg.Error:
+        return resposta_falha_no_banco("listar_produtos")
+    produtos = [
+        {"id": linha["id"], "nome": linha["nome"], "categoria": linha["categoria"], "preco": str(linha["preco"])}
+        for linha in linhas
+    ]
+    registrar_log("INFO", "web", "listar_produtos", "success", f"{len(produtos)} produtos listados")
+    return jsonify(produtos=produtos), 200
+
+
+@app.get("/api/web/records/<int:id_venda>")
+@exigir_autenticacao_web("consultar_venda")
+def web_consultar_venda(id_venda):
+    if id_venda > ID_MAXIMO:
+        return resposta_venda_nao_encontrada("consultar_venda", id_venda)
+    try:
+        linha = db.consultar_venda_web(id_venda, g.request_id)
+    except psycopg.Error:
+        return resposta_falha_no_banco("consultar_venda")
+    if linha is None:
+        return resposta_venda_nao_encontrada("consultar_venda", id_venda)
+    registrar_log("INFO", "web", "consultar_venda", "success", f"Venda {id_venda} consultada")
+    return jsonify(venda_para_json(linha)), 200
+
+
+@app.post("/api/web/records")
+@exigir_autenticacao_web("criar_venda")
+def web_criar_venda():
+    venda, erro = ler_venda_da_requisicao("criar_venda")
+    if erro:
+        return erro
+    try:
+        linha = db.criar_venda_web(venda, g.request_id)
+    except db.ProdutoInexistente:
+        return resposta_produto_inexistente("criar_venda")
+    except psycopg.Error:
+        return resposta_falha_no_banco("criar_venda")
+    registrar_log("INFO", "web", "criar_venda", "success", f"Venda {linha['id']} criada")
+    return jsonify(venda_para_json(linha)), 201
+
+
+@app.put("/api/web/records/<int:id_venda>")
+@exigir_autenticacao_web("editar_venda")
+def web_editar_venda(id_venda):
+    venda, erro = ler_venda_da_requisicao("editar_venda")
+    if erro:
+        return erro
+    if id_venda > ID_MAXIMO:
+        return resposta_venda_nao_encontrada("editar_venda", id_venda)
+    try:
+        linha = db.editar_venda_web(id_venda, venda, g.request_id)
+    except db.ProdutoInexistente:
+        return resposta_produto_inexistente("editar_venda")
+    except psycopg.Error:
+        return resposta_falha_no_banco("editar_venda")
+    if linha is None:
+        return resposta_venda_nao_encontrada("editar_venda", id_venda)
+    registrar_log("INFO", "web", "editar_venda", "success", f"Venda {id_venda} atualizada")
+    return jsonify(venda_para_json(linha)), 200
 
 
 def inicializar():

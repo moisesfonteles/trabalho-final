@@ -116,3 +116,100 @@ def buscar_usuario(usuario, request_id, origem):
     mensagem = "Usuário encontrado" if linha else "Usuário não encontrado"
     registrar_log("INFO", origem, "consultar_usuario", "success", request_id, mensagem)
     return linha
+
+
+class ProdutoInexistente(Exception):
+    """O `produto_id` informado não existe no catálogo."""
+
+
+def _venda_completa(conexao, id_venda):
+    """Busca a venda com o nome e a categoria do produto (consulta da Web)."""
+    return conexao.execute(
+        """
+        SELECT venda.id, venda.produto_id, produto.nome AS produto_nome, produto.categoria,
+               venda.quantidade, venda.valor_unitario, venda.valor_total, venda.data_venda
+        FROM venda JOIN produto ON produto.id = venda.produto_id
+        WHERE venda.id = %s
+        """,
+        (id_venda,),
+    ).fetchone()
+
+
+def listar_produtos_web(request_id):
+    """Retorna o catálogo de produtos para o select do formulário da Web."""
+    try:
+        with obter_conexao() as conexao:
+            linhas = conexao.execute(
+                "SELECT id, nome, categoria, preco FROM produto ORDER BY categoria, nome"
+            ).fetchall()
+    except psycopg.Error:
+        registrar_log("ERROR", "web", "listar_produtos", "error", request_id, "Falha ao listar produtos")
+        raise
+    registrar_log("INFO", "web", "listar_produtos", "success", request_id, f"{len(linhas)} produtos listados")
+    return linhas
+
+
+def consultar_venda_web(id_venda, request_id):
+    """Retorna a venda (dict) ou None se não existir."""
+    try:
+        with obter_conexao() as conexao:
+            linha = _venda_completa(conexao, id_venda)
+    except psycopg.Error:
+        registrar_log("ERROR", "web", "consultar_venda", "error", request_id, "Falha ao consultar venda")
+        raise
+    mensagem = f"Venda {id_venda} encontrada" if linha else f"Venda {id_venda} não encontrada"
+    registrar_log("INFO", "web", "consultar_venda", "success", request_id, mensagem)
+    return linha
+
+
+def criar_venda_web(venda, request_id):
+    """Insere a venda e a retorna completa. Lança ProdutoInexistente se o produto não existir."""
+    try:
+        with obter_conexao() as conexao:
+            id_venda = conexao.execute(
+                """
+                INSERT INTO venda (produto_id, quantidade, valor_unitario, data_venda)
+                VALUES (%(produto_id)s, %(quantidade)s, %(valor_unitario)s, %(data_venda)s)
+                RETURNING id
+                """,
+                venda,
+            ).fetchone()["id"]
+            linha = _venda_completa(conexao, id_venda)
+    except psycopg.errors.ForeignKeyViolation:
+        registrar_log("WARN", "web", "criar_venda", "error", request_id, "Produto inexistente")
+        raise ProdutoInexistente from None
+    except psycopg.Error:
+        registrar_log("ERROR", "web", "criar_venda", "error", request_id, "Falha ao criar venda")
+        raise
+    registrar_log("INFO", "web", "criar_venda", "success", request_id, f"Venda {id_venda} criada")
+    return linha
+
+
+def editar_venda_web(id_venda, venda, request_id):
+    """Atualiza todos os campos da venda e a retorna completa, ou None se ela não existir.
+
+    Lança ProdutoInexistente se o produto não existir.
+    """
+    try:
+        with obter_conexao() as conexao:
+            atualizada = conexao.execute(
+                """
+                UPDATE venda SET produto_id = %(produto_id)s, quantidade = %(quantidade)s,
+                                 valor_unitario = %(valor_unitario)s, data_venda = %(data_venda)s
+                WHERE id = %(id)s
+                RETURNING id
+                """,
+                {**venda, "id": id_venda},
+            ).fetchone()
+            linha = _venda_completa(conexao, id_venda) if atualizada else None
+    except psycopg.errors.ForeignKeyViolation:
+        registrar_log("WARN", "web", "editar_venda", "error", request_id, "Produto inexistente")
+        raise ProdutoInexistente from None
+    except psycopg.Error:
+        registrar_log("ERROR", "web", "editar_venda", "error", request_id, "Falha ao editar venda")
+        raise
+    if linha is None:
+        registrar_log("WARN", "web", "editar_venda", "error", request_id, f"Venda {id_venda} não encontrada")
+    else:
+        registrar_log("INFO", "web", "editar_venda", "success", request_id, f"Venda {id_venda} atualizada")
+    return linha
