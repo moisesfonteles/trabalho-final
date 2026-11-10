@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from functools import wraps
 
 import psycopg
-from flask import Flask, g, jsonify, request
+from flask import Flask, cli, g, jsonify, request
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -18,7 +18,9 @@ import db
 VALIDADE_TOKEN_WEB = 8 * 60 * 60  # 8 horas
 
 app = Flask(__name__)
-logging.getLogger("werkzeug").disabled = True  # mantém o stdout só com logs JSON
+# Mantém o stdout só com logs JSON: silencia o log de acesso do Werkzeug e o banner do Flask.
+logging.getLogger("werkzeug").disabled = True
+cli.show_server_banner = lambda *_args: None
 
 
 def registrar_log(nivel, origem, operacao, status, mensagem):
