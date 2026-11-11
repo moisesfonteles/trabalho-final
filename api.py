@@ -19,6 +19,7 @@ import db
 VALIDADE_TOKEN_WEB = 8 * 60 * 60  # 8 horas
 
 # Limites da venda: mantêm quantidade * valor_unitario dentro de NUMERIC(12, 2) e os ids dentro de INTEGER.
+# QUANTIDADE_MAXIMA e VALOR_UNITARIO_MAXIMO: manter iguais aos de index.html.
 QUANTIDADE_MAXIMA = 10_000
 VALOR_UNITARIO_MAXIMO = Decimal("100000.00")
 ID_MAXIMO = 2_147_483_647
