@@ -157,8 +157,10 @@ def consultar_venda_web(id_venda, request_id):
     except psycopg.Error:
         registrar_log("ERROR", "web", "consultar_venda", "error", request_id, "Falha ao consultar venda")
         raise
-    mensagem = f"Venda {id_venda} encontrada" if linha else f"Venda {id_venda} não encontrada"
-    registrar_log("INFO", "web", "consultar_venda", "success", request_id, mensagem)
+    if linha is None:
+        registrar_log("WARN", "web", "consultar_venda", "error", request_id, f"Venda {id_venda} não encontrada")
+    else:
+        registrar_log("INFO", "web", "consultar_venda", "success", request_id, f"Venda {id_venda} encontrada")
     return linha
 
 

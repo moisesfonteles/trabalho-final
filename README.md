@@ -42,6 +42,7 @@ As variáveis são lidas do ambiente ou de um arquivo `.env` na raiz (veja `.env
 | `CHAVE_SECRETA` | valor de desenvolvimento | Assina os tokens de sessão Web |
 | `SENHA_BANCO` | `app` | Senha do PostgreSQL |
 | `PORTA_WEB` | `8080` | Porta da Web no host |
+| `FUSO_HORARIO` | `America/Fortaleza` | Fuso (nome IANA) que define a data de "hoje" na validação da data da venda |
 
 ```bash
 cp .env.example .env   # edite os valores antes de subir
@@ -88,6 +89,8 @@ Todos os campos são obrigatórios e validados duas vezes: no navegador, antes d
 | `valor_unitario` | Valor unitário (R$) | Maior que 0, até 100000.00, com no máximo 2 casas decimais. Ao escolher o produto, o formulário sugere o preço do catálogo, que pode ser alterado (ex.: desconto) |
 | `data_venda` | Data da venda | Data válida no formato `AAAA-MM-DD`, que não pode ser futura. O formulário sugere a data de hoje |
 
+"Futura" quer dizer depois de hoje no fuso `FUSO_HORARIO` (padrão `America/Fortaleza`), e não em UTC. Assim a API, a Web e a CLI usam o mesmo "hoje", e às 22h em Fortaleza a data de amanhã continua sendo recusada. O formulário usa a data local do navegador, que é a mesma quando ele está nesse fuso. Se `FUSO_HORARIO` tiver um nome inválido, a API não sobe.
+
 O `valor_total` (`quantidade × valor_unitario`) é calculado pelo banco e exibido no formulário enquanto os campos são preenchidos. Os limites de quantidade e valor mantêm o total dentro da coluna `NUMERIC(12,2)`.
 
 ### Cadastrar e editar pela Web
@@ -107,9 +110,11 @@ Todos exigem `Authorization: Bearer <token>`. Sem token ou com token inválido, 
 | Método | Rota | Resposta |
 |---|---|---|
 | GET | `/api/web/produtos` | `200 {"produtos": [{"id","nome","categoria","preco"}]}` |
-| GET | `/api/web/records/{id}` | `200` venda; `404` se não existir. Usado para carregar a venda na edição |
+| GET | `/api/web/records/{id}` | `200` venda; `400` id inválido; `404` se não existir. Usado para carregar a venda na edição |
 | POST | `/api/web/records` | `201` venda criada; `400` corpo que não é objeto JSON; `422` campos inválidos |
-| PUT | `/api/web/records/{id}` | `200` venda atualizada; `400`; `404` se não existir; `422` campos inválidos |
+| PUT | `/api/web/records/{id}` | `200` venda atualizada; `400` id ou corpo inválido; `404` se não existir; `422` campos inválidos |
+
+O `{id}` precisa ser um inteiro positivo. Valores como `-1`, `0` ou `abc` recebem `400 {"erro": "Número da venda inválido."}` (depois da autenticação: sem token, continua `401`).
 
 A venda é devolvida como `{"id","produto_id","produto_nome","categoria","quantidade","valor_unitario","valor_total","data_venda"}`, com valores em texto (`"25.50"`) para não perder precisão. O `PUT` substitui todos os campos, então o corpo precisa ter os quatro. No `422`, o campo `campos` traz a mensagem de cada campo inválido, inclusive `produto_id` quando o produto não existe:
 
@@ -133,7 +138,7 @@ curl -i -X PUT http://localhost:8080/api/web/records/1 -H "Authorization: Bearer
 
 ### Logs
 
-Cada operação registra uma linha na camada `api` e outra na camada `db`, com `client: "web"` e o mesmo `request_id`. Os valores de `operation` são `listar_produtos`, `consultar_venda`, `criar_venda` e `editar_venda`. Venda inexistente e produto inexistente geram `WARN` com `status: "error"` nas duas camadas. Dados inválidos são recusados antes de chegar ao banco, então geram `WARN` só na camada `api`. Falhas no banco geram `ERROR`.
+Cada operação registra uma linha na camada `api` e outra na camada `db`, com `client: "web"` e o mesmo `request_id`. Os valores de `operation` são `listar_produtos`, `consultar_venda`, `criar_venda` e `editar_venda`. Venda inexistente e produto inexistente geram `WARN` com `status: "error"` nas duas camadas. Dados ou id inválidos são recusados antes de chegar ao banco, então geram `WARN` só na camada `api`. Falhas no banco geram `ERROR`.
 
 ## Logs
 

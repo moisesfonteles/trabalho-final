@@ -3,9 +3,10 @@
 import os
 import re
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from functools import wraps
+from zoneinfo import ZoneInfo
 
 import psycopg
 from flask import Flask, g, jsonify, request
@@ -22,6 +23,10 @@ QUANTIDADE_MAXIMA = 10_000
 VALOR_UNITARIO_MAXIMO = Decimal("100000.00")
 ID_MAXIMO = 2_147_483_647
 FORMATO_DATA = re.compile(r"\d{4}-\d{2}-\d{2}")
+FORMATO_ID = re.compile(r"[0-9]+")  # só dígitos ASCII (\d aceitaria "１")
+
+# Fuso usado para saber qual é a data de "hoje" (data da venda não pode ser futura).
+FUSO_HORARIO_PADRAO = "America/Fortaleza"
 
 # Hash usado quando o usuário não existe, para o login levar o mesmo tempo nos dois casos
 # e não revelar quais usuários estão cadastrados.
@@ -123,6 +128,15 @@ def web_sessao():
     return jsonify(usuario=g.usuario, nome=g.nome), 200
 
 
+def fuso_horario():
+    """Fuso de `FUSO_HORARIO` (padrão America/Fortaleza). Lança erro se o nome não existir."""
+    return ZoneInfo(os.environ.get("FUSO_HORARIO") or FUSO_HORARIO_PADRAO)
+
+
+def hoje():
+    return datetime.now(fuso_horario()).date()
+
+
 def validar_venda(dados):
     """Valida os campos da venda. Retorna (venda, erros), com `erros` indexado pelo nome do campo."""
     erros = {}
@@ -178,7 +192,7 @@ def validar_venda(dados):
                 data = None
         if data is None:
             erros["data_venda"] = "Data inválida; use o formato AAAA-MM-DD."
-        elif data > datetime.now(timezone.utc).date():
+        elif data > hoje():
             erros["data_venda"] = "A data da venda não pode ser futura."
         else:
             venda["data_venda"] = data
@@ -212,6 +226,18 @@ def ler_venda_da_requisicao(operacao):
     return venda, None
 
 
+def ler_id_venda(texto, operacao):
+    """Converte o id da rota. Retorna (id, None) ou (None, resposta de erro)."""
+    digitos = texto.lstrip("0") if FORMATO_ID.fullmatch(texto) else ""
+    if not digitos:
+        registrar_log("WARN", "web", operacao, "error", "Número da venda inválido")
+        return None, (jsonify(erro="Número da venda inválido."), 400)
+    # Mais dígitos que o maior INTEGER: a venda não existe. Testar o tamanho antes evita converter textos enormes.
+    if len(digitos) > len(str(ID_MAXIMO)) or int(digitos) > ID_MAXIMO:
+        return None, resposta_venda_nao_encontrada(operacao, "acima do limite")
+    return int(digitos), None
+
+
 def resposta_produto_inexistente(operacao):
     registrar_log("WARN", "web", operacao, "error", "Produto inexistente")
     return jsonify(erro="Dados inválidos.", campos={"produto_id": "Produto não encontrado."}), 422
@@ -242,11 +268,12 @@ def web_listar_produtos():
     return jsonify(produtos=produtos), 200
 
 
-@app.get("/api/web/records/<int:id_venda>")
+@app.get("/api/web/records/<id_venda>")
 @exigir_autenticacao_web("consultar_venda")
 def web_consultar_venda(id_venda):
-    if id_venda > ID_MAXIMO:
-        return resposta_venda_nao_encontrada("consultar_venda", id_venda)
+    id_venda, erro = ler_id_venda(id_venda, "consultar_venda")
+    if erro:
+        return erro
     try:
         linha = db.consultar_venda_web(id_venda, g.request_id)
     except psycopg.Error:
@@ -273,14 +300,15 @@ def web_criar_venda():
     return jsonify(venda_para_json(linha)), 201
 
 
-@app.put("/api/web/records/<int:id_venda>")
+@app.put("/api/web/records/<id_venda>")
 @exigir_autenticacao_web("editar_venda")
 def web_editar_venda(id_venda):
+    id_venda, erro = ler_id_venda(id_venda, "editar_venda")
+    if erro:
+        return erro
     venda, erro = ler_venda_da_requisicao("editar_venda")
     if erro:
         return erro
-    if id_venda > ID_MAXIMO:
-        return resposta_venda_nao_encontrada("editar_venda", id_venda)
     try:
         linha = db.editar_venda_web(id_venda, venda, g.request_id)
     except db.ProdutoInexistente:
@@ -295,6 +323,7 @@ def web_editar_venda(id_venda):
 
 def inicializar():
     """Cria as tabelas e o usuário inicial a partir das variáveis de ambiente."""
+    fuso_horario()  # falha já na inicialização se FUSO_HORARIO for inválido
     senha_hash = generate_password_hash(os.environ["ADMIN_SENHA"])
     db.inicializar_banco(os.environ["ADMIN_USUARIO"], os.environ["ADMIN_NOME"], senha_hash)
 

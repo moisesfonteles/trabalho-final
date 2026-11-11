@@ -1,7 +1,8 @@
 """Testes do cadastro e edição de vendas pela Web (issue #2)."""
 
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import psycopg
 import pytest
@@ -9,7 +10,7 @@ import pytest
 import api
 import db
 
-HOJE = datetime.now(timezone.utc).date()
+HOJE = api.hoje()
 
 
 def _eventos(capsys):
@@ -196,9 +197,37 @@ def test_consultar_venda(cliente_http, cabecalho, venda_criada):
     assert resposta.get_json() == venda_criada
 
 
-@pytest.mark.parametrize("id_venda", [999999, api.ID_MAXIMO + 1])
+@pytest.mark.parametrize("id_venda", [999999, "000999999", api.ID_MAXIMO + 1, "9" * 20, "9" * 5000, "0" * 5000 + "9" * 11])
 def test_consultar_venda_inexistente(cliente_http, cabecalho, id_venda):
-    assert cliente_http.get(f"/api/web/records/{id_venda}", headers=cabecalho).status_code == 404
+    resposta = cliente_http.get(f"/api/web/records/{id_venda}", headers=cabecalho)
+    assert resposta.status_code == 404
+    assert resposta.get_json() == {"erro": "Venda não encontrada."}
+
+
+def test_consultar_venda_inexistente_registra_warn_nas_duas_camadas(cliente_http, cabecalho, capsys):
+    capsys.readouterr()
+    resposta = cliente_http.get("/api/web/records/999999", headers=cabecalho)
+    request_id = resposta.headers["X-Request-ID"]
+    eventos = [e for e in _eventos(capsys) if e["request_id"] == request_id]
+    assert {e["layer"] for e in eventos} == {"api", "db"}
+    assert all(e["level"] == "WARN" and e["status"] == "error" for e in eventos)
+
+
+@pytest.mark.parametrize("metodo", ["get", "put"])
+@pytest.mark.parametrize("id_venda", ["-1", "0", "000", "abc", "+1", "1.5", "１"])
+def test_id_de_venda_invalido(cliente_http, cabecalho, capsys, metodo, id_venda):
+    capsys.readouterr()
+    resposta = getattr(cliente_http, metodo)(f"/api/web/records/{id_venda}", json=_venda_valida(), headers=cabecalho)
+    assert resposta.status_code == 400
+    assert resposta.get_json() == {"erro": "Número da venda inválido."}
+    request_id = resposta.headers["X-Request-ID"]
+    eventos = [e for e in _eventos(capsys) if e["request_id"] == request_id]
+    assert [(e["layer"], e["level"]) for e in eventos] == [("api", "WARN")]
+
+
+def test_id_de_venda_invalido_sem_token_responde_401(cliente_http):
+    assert cliente_http.get("/api/web/records/-1").status_code == 401
+    assert cliente_http.put("/api/web/records/abc", json=_venda_valida()).status_code == 401
 
 
 def test_consultar_venda_erro_no_banco(cliente_http, cabecalho, monkeypatch):
@@ -252,6 +281,35 @@ def test_editar_venda_erro_no_banco(cliente_http, cabecalho, monkeypatch):
     assert cliente_http.put("/api/web/records/1", json=_venda_valida(), headers=cabecalho).status_code == 500
 
 
+# --- fuso horário ---------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("fuso", ["Etc/GMT-14", "Etc/GMT+12", "America/Fortaleza"])
+def test_data_futura_usa_fuso_configurado(cliente_http, cabecalho, monkeypatch, fuso):
+    monkeypatch.setenv("FUSO_HORARIO", fuso)
+    hoje_no_fuso = datetime.now(ZoneInfo(fuso)).date()
+    corpo = _venda_valida(data_venda=hoje_no_fuso.isoformat())
+    assert cliente_http.post("/api/web/records", json=corpo, headers=cabecalho).status_code == 201
+    corpo = _venda_valida(data_venda=(hoje_no_fuso + timedelta(days=1)).isoformat())
+    resposta = cliente_http.post("/api/web/records", json=corpo, headers=cabecalho)
+    assert resposta.status_code == 422 and set(resposta.get_json()["campos"]) == {"data_venda"}
+
+
+@pytest.mark.parametrize("valor", [None, ""])
+def test_fuso_padrao_e_fortaleza(monkeypatch, valor):
+    if valor is None:
+        monkeypatch.delenv("FUSO_HORARIO", raising=False)
+    else:
+        monkeypatch.setenv("FUSO_HORARIO", valor)
+    assert api.fuso_horario() == ZoneInfo("America/Fortaleza")
+
+
+def test_fuso_invalido_impede_inicializacao(monkeypatch):
+    monkeypatch.setenv("FUSO_HORARIO", "Lugar/Inexistente")
+    with pytest.raises(ZoneInfoNotFoundError):
+        api.inicializar()
+
+
 # --- camada de banco ------------------------------------------------------------------------------
 
 
@@ -274,6 +332,8 @@ def test_db_criar_consultar_e_editar_venda(capsys):
 
 def test_db_venda_inexistente(capsys):
     assert db.consultar_venda_web(999999, "req-v4") is None
+    evento = _eventos(capsys)[-1]
+    assert evento["level"] == "WARN" and evento["status"] == "error" and evento["request_id"] == "req-v4"
     assert db.editar_venda_web(999999, _venda_db(), "req-v5") is None
     evento = _eventos(capsys)[-1]
     assert evento["level"] == "WARN" and evento["status"] == "error" and evento["request_id"] == "req-v5"

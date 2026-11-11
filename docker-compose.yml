@@ -23,6 +23,7 @@ services:
       ADMIN_NOME: ${ADMIN_NOME:-Administrador}
       ADMIN_SENHA: ${ADMIN_SENHA:-admin123}
       CHAVE_SECRETA: ${CHAVE_SECRETA:-troque-esta-chave-em-producao}
+      FUSO_HORARIO: ${FUSO_HORARIO:-America/Fortaleza}
     depends_on:
       db:
         condition: service_healthy
