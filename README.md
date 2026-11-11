@@ -73,6 +73,68 @@ curl -i -X POST http://localhost:8080/api/web/login \
   -H 'Content-Type: application/json' -d '{"usuario":"admin","senha":"admin123"}'
 ```
 
+## #2 — Cadastro e edição de registros na Web
+
+Cada registro é uma **venda** (tabela `venda`) de um produto do catálogo fixo (tabela `produto`).
+
+### Campos e validação
+
+Todos os campos são obrigatórios e validados duas vezes: no navegador, antes do envio, e na API, que é quem decide.
+
+| Campo | No formulário | Regra |
+|---|---|---|
+| `produto_id` | Produto (lista agrupada por categoria) | Inteiro de um produto existente no catálogo |
+| `quantidade` | Quantidade | Inteiro de 1 a 10000 |
+| `valor_unitario` | Valor unitário (R$) | Maior que 0, até 100000.00, com no máximo 2 casas decimais. Ao escolher o produto, o formulário sugere o preço do catálogo, que pode ser alterado (ex.: desconto) |
+| `data_venda` | Data da venda | Data válida no formato `AAAA-MM-DD`, que não pode ser futura. O formulário sugere a data de hoje |
+
+O `valor_total` (`quantidade × valor_unitario`) é calculado pelo banco e exibido no formulário enquanto os campos são preenchidos. Os limites de quantidade e valor mantêm o total dentro da coluna `NUMERIC(12,2)`.
+
+### Cadastrar e editar pela Web
+
+1. Faça login em <http://localhost:8080>.
+2. **Cadastrar:** no cartão "Nova venda", escolha o produto, preencha quantidade, valor e data e clique em **Cadastrar venda**. A mensagem de sucesso mostra o número da venda criada.
+3. **Editar:** informe o número da venda em **Editar venda nº** e clique em **Carregar**. O formulário passa a "Editar venda nº X". Altere os campos e clique em **Salvar alterações**, ou em **Cancelar edição** para voltar ao cadastro.
+
+Erros de validação aparecem abaixo de cada campo, tanto os do navegador quanto os devolvidos pela API. Se a sessão expirar, a página volta para o login.
+
+As vendas ficam no volume `dados-banco` e continuam lá depois de `docker compose down` / `up`. Só `docker compose down -v` apaga os dados.
+
+### Endpoints desta issue
+
+Todos exigem `Authorization: Bearer <token>`. Sem token ou com token inválido, respondem `401`.
+
+| Método | Rota | Resposta |
+|---|---|---|
+| GET | `/api/web/produtos` | `200 {"produtos": [{"id","nome","categoria","preco"}]}` |
+| GET | `/api/web/records/{id}` | `200` venda; `404` se não existir. Usado para carregar a venda na edição |
+| POST | `/api/web/records` | `201` venda criada; `400` corpo que não é objeto JSON; `422` campos inválidos |
+| PUT | `/api/web/records/{id}` | `200` venda atualizada; `400`; `404` se não existir; `422` campos inválidos |
+
+A venda é devolvida como `{"id","produto_id","produto_nome","categoria","quantidade","valor_unitario","valor_total","data_venda"}`, com valores em texto (`"25.50"`) para não perder precisão. O `PUT` substitui todos os campos, então o corpo precisa ter os quatro. No `422`, o campo `campos` traz a mensagem de cada campo inválido, inclusive `produto_id` quando o produto não existe:
+
+```json
+{"erro": "Dados inválidos.", "campos": {"quantidade": "A quantidade deve ser um número inteiro entre 1 e 10000."}}
+```
+
+Pelo terminal:
+
+```bash
+TOKEN=$(curl -s -X POST http://localhost:8080/api/web/login -H 'Content-Type: application/json' \
+  -d '{"usuario":"admin","senha":"admin123"}' | sed 's/.*"token": *"\([^"]*\)".*/\1/')
+curl -s http://localhost:8080/api/web/produtos -H "Authorization: Bearer $TOKEN"
+curl -i -X POST http://localhost:8080/api/web/records -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"produto_id":1,"quantidade":3,"valor_unitario":"25.50","data_venda":"2026-10-15"}'
+curl -i -X PUT http://localhost:8080/api/web/records/1 -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"produto_id":1,"quantidade":5,"valor_unitario":"25.50","data_venda":"2026-10-15"}'
+```
+
+### Logs
+
+Cada operação registra uma linha na camada `api` e outra na camada `db`, com `client: "web"` e o mesmo `request_id`. Os valores de `operation` são `listar_produtos`, `consultar_venda`, `criar_venda` e `editar_venda`. Venda inexistente e produto inexistente geram `WARN` com `status: "error"` nas duas camadas. Dados inválidos são recusados antes de chegar ao banco, então geram `WARN` só na camada `api`. Falhas no banco geram `ERROR`.
+
 ## Logs
 
 Cada evento é uma linha JSON no stdout, com `timestamp`, `level`, `layer` (`api`/`db`), `client` (`web`/`cli`), `operation`, `status`, `request_id` e `message`. API e banco compartilham o mesmo `request_id` dentro de uma requisição (também devolvido no header `X-Request-ID`). A inicialização do banco usa `client: "sistema"` e `request_id: "inicializacao"`. Erros não previstos na API viram `500 {"erro": "Erro interno"}` com log `ERROR`.
