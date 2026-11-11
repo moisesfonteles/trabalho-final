@@ -41,12 +41,14 @@
     }
     #tela-login .cartao { max-width: 360px; margin: 4rem auto; }
     label { display: block; font-size: 0.9rem; margin: 0.75rem 0 0.25rem; }
-    input {
+    input, select {
       width: 100%;
       padding: 0.55rem 0.65rem;
       border: 1px solid var(--borda);
       border-radius: 6px;
       font-size: 1rem;
+      background: var(--superficie);
+      color: var(--texto);
     }
     button {
       cursor: pointer;
@@ -66,6 +68,18 @@
     .situacao.disponivel .ponto { background: var(--sucesso); }
     .situacao.indisponivel .ponto { background: var(--perigo); }
     .oculto { display: none !important; }
+    .cartao + .cartao { margin-top: 1.5rem; }
+    .cabecalho-cartao { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; justify-content: space-between; }
+    .cabecalho-cartao h2 { margin: 0; }
+    .carregar-venda { display: flex; gap: 0.5rem; align-items: flex-end; }
+    .carregar-venda label { margin-top: 0; }
+    .carregar-venda input { width: 7rem; }
+    .grade-campos { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 1rem; }
+    .erro-campo { color: var(--perigo); font-size: 0.8rem; min-height: 1.1em; margin-top: 0.2rem; }
+    input[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--perigo); }
+    .acoes { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; margin-top: 1rem; }
+    .total { margin-left: auto; color: var(--suave); }
+    .sucesso { color: var(--sucesso); font-size: 0.9rem; min-height: 1.2em; margin-top: 0.75rem; }
   </style>
 </head>
 <body>
@@ -97,7 +111,53 @@
       <div class="cartao">
         <h2 style="margin-top:0">Página inicial</h2>
         <p>Bem-vindo(a), <strong id="nome-boas-vindas"></strong>.</p>
-        <p class="situacao">Cadastro, listagem, busca, exportação e dashboard serão adicionados nas próximas issues.</p>
+        <p class="situacao">Listagem, busca, exportação e dashboard serão adicionados nas próximas issues.</p>
+      </div>
+
+      <div class="cartao" id="cartao-venda">
+        <div class="cabecalho-cartao">
+          <h2 id="titulo-venda">Nova venda</h2>
+          <form id="formulario-carregar" class="carregar-venda" novalidate>
+            <div>
+              <label for="id-carregar">Editar venda nº</label>
+              <input id="id-carregar" type="number" min="1" step="1" inputmode="numeric">
+            </div>
+            <button type="submit" class="secundario">Carregar</button>
+          </form>
+        </div>
+        <form id="formulario-venda" novalidate>
+          <div class="grade-campos">
+            <div>
+              <label for="produto_id">Produto *</label>
+              <select id="produto_id" required aria-describedby="erro-produto_id">
+                <option value="">Carregando produtos…</option>
+              </select>
+              <div id="erro-produto_id" class="erro-campo"></div>
+            </div>
+            <div>
+              <label for="quantidade">Quantidade *</label>
+              <input id="quantidade" type="number" min="1" max="10000" step="1" inputmode="numeric" required aria-describedby="erro-quantidade">
+              <div id="erro-quantidade" class="erro-campo"></div>
+            </div>
+            <div>
+              <label for="valor_unitario">Valor unitário (R$) *</label>
+              <input id="valor_unitario" type="number" min="0.01" max="100000" step="0.01" inputmode="decimal" required aria-describedby="erro-valor_unitario">
+              <div id="erro-valor_unitario" class="erro-campo"></div>
+            </div>
+            <div>
+              <label for="data_venda">Data da venda *</label>
+              <input id="data_venda" type="date" required aria-describedby="erro-data_venda">
+              <div id="erro-data_venda" class="erro-campo"></div>
+            </div>
+          </div>
+          <div class="acoes">
+            <button type="submit" id="salvar-venda">Cadastrar venda</button>
+            <button type="button" id="cancelar-edicao" class="secundario oculto">Cancelar edição</button>
+            <span class="total">Total: <strong id="total-venda">—</strong></span>
+          </div>
+          <div id="erro-venda" class="erro" role="alert"></div>
+          <div id="sucesso-venda" class="sucesso" role="status"></div>
+        </form>
       </div>
     </section>
   </main>
@@ -120,6 +180,209 @@
       }
     }
 
+    const CAMPOS_VENDA = ["produto_id", "quantidade", "valor_unitario", "data_venda"];
+    const QUANTIDADE_MAXIMA = 10000;
+    const VALOR_UNITARIO_MAXIMO = 100000;
+    const moeda = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
+    let produtos = [];
+    let idEmEdicao = null;
+
+    class NaoAutenticado extends Error {}
+
+    async function chamarApi(caminho, opcoes = {}) {
+      const resposta = await fetch(caminho, {
+        ...opcoes,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${sessionStorage.getItem(CHAVE_TOKEN)}`,
+          ...(opcoes.headers || {}),
+        },
+      });
+      if (resposta.status === 401) {
+        mostrarLogin();
+        throw new NaoAutenticado();
+      }
+      const dados = await resposta.json().catch(() => ({}));
+      return { resposta, dados };
+    }
+
+    function hojeLocal() {
+      const agora = new Date();
+      agora.setMinutes(agora.getMinutes() - agora.getTimezoneOffset());
+      return agora.toISOString().slice(0, 10);
+    }
+
+    async function carregarProdutos() {
+      const select = $("produto_id");
+      try {
+        const { resposta, dados } = await chamarApi("/api/web/produtos");
+        if (!resposta.ok) throw new Error();
+        produtos = dados.produtos;
+        select.replaceChildren(new Option("Selecione o produto", ""));
+        const grupos = {};
+        for (const produto of produtos) {
+          if (!grupos[produto.categoria]) {
+            grupos[produto.categoria] = document.createElement("optgroup");
+            grupos[produto.categoria].label = produto.categoria;
+            select.append(grupos[produto.categoria]);
+          }
+          grupos[produto.categoria].append(new Option(`${produto.nome} — ${moeda.format(produto.preco)}`, produto.id));
+        }
+      } catch (erro) {
+        if (erro instanceof NaoAutenticado) return;
+        select.replaceChildren(new Option("Não foi possível carregar os produtos", ""));
+      }
+    }
+
+    function limparErrosVenda() {
+      for (const campo of CAMPOS_VENDA) {
+        $(`erro-${campo}`).textContent = "";
+        $(campo).removeAttribute("aria-invalid");
+      }
+      $("erro-venda").textContent = "";
+    }
+
+    function mostrarErrosVenda(erros) {
+      for (const [campo, mensagem] of Object.entries(erros)) {
+        if (!CAMPOS_VENDA.includes(campo)) continue;
+        $(`erro-${campo}`).textContent = mensagem;
+        $(campo).setAttribute("aria-invalid", "true");
+      }
+      const primeiro = CAMPOS_VENDA.find((campo) => erros[campo]);
+      if (primeiro) $(primeiro).focus();
+    }
+
+    function lerFormularioVenda() {
+      const venda = {};
+      const erros = {};
+
+      const produtoId = $("produto_id").value;
+      if (!produtoId) erros.produto_id = "Informe o produto.";
+      else venda.produto_id = Number(produtoId);
+
+      const quantidade = $("quantidade").value;
+      if (!quantidade) erros.quantidade = "Informe a quantidade.";
+      else if (!/^\d+$/.test(quantidade) || Number(quantidade) < 1 || Number(quantidade) > QUANTIDADE_MAXIMA)
+        erros.quantidade = `A quantidade deve ser um número inteiro entre 1 e ${QUANTIDADE_MAXIMA}.`;
+      else venda.quantidade = Number(quantidade);
+
+      const valor = $("valor_unitario").value;
+      if (!valor) erros.valor_unitario = $("valor_unitario").validity.badInput ? "Valor unitário inválido." : "Informe o valor unitário.";
+      else if (!/^\d+(\.\d{1,2})?$/.test(valor) || Number(valor) <= 0 || Number(valor) > VALOR_UNITARIO_MAXIMO)
+        erros.valor_unitario = "O valor unitário deve ser maior que zero, até 100000.00, com no máximo 2 casas decimais.";
+      else venda.valor_unitario = valor;
+
+      const data = $("data_venda").value;
+      if (!data) erros.data_venda = "Informe a data da venda.";
+      else if (data > hojeLocal()) erros.data_venda = "A data da venda não pode ser futura.";
+      else venda.data_venda = data;
+
+      return { venda, erros };
+    }
+
+    function atualizarTotal() {
+      const quantidade = Number($("quantidade").value);
+      const valor = Number($("valor_unitario").value);
+      $("total-venda").textContent = quantidade > 0 && valor > 0 ? moeda.format(quantidade * valor) : "—";
+    }
+
+    function prepararNovaVenda() {
+      idEmEdicao = null;
+      $("formulario-venda").reset();
+      $("data_venda").value = hojeLocal();
+      $("data_venda").max = hojeLocal();
+      $("titulo-venda").textContent = "Nova venda";
+      $("salvar-venda").textContent = "Cadastrar venda";
+      $("cancelar-edicao").classList.add("oculto");
+      limparErrosVenda();
+      atualizarTotal();
+    }
+
+    function prepararEdicao(venda) {
+      idEmEdicao = venda.id;
+      $("produto_id").value = String(venda.produto_id);
+      $("quantidade").value = venda.quantidade;
+      $("valor_unitario").value = venda.valor_unitario;
+      $("data_venda").value = venda.data_venda;
+      $("titulo-venda").textContent = `Editar venda nº ${venda.id}`;
+      $("salvar-venda").textContent = "Salvar alterações";
+      $("cancelar-edicao").classList.remove("oculto");
+      limparErrosVenda();
+      atualizarTotal();
+    }
+
+    $("produto_id").addEventListener("change", () => {
+      const produto = produtos.find((p) => String(p.id) === $("produto_id").value);
+      if (produto && idEmEdicao === null) $("valor_unitario").value = produto.preco;
+      atualizarTotal();
+    });
+    $("quantidade").addEventListener("input", atualizarTotal);
+    $("valor_unitario").addEventListener("input", atualizarTotal);
+
+    $("cancelar-edicao").addEventListener("click", () => {
+      prepararNovaVenda();
+      $("sucesso-venda").textContent = "";
+    });
+
+    $("formulario-carregar").addEventListener("submit", async (evento) => {
+      evento.preventDefault();
+      const id = $("id-carregar").value;
+      $("sucesso-venda").textContent = "";
+      limparErrosVenda();
+      if (!/^\d+$/.test(id) || Number(id) < 1) {
+        $("erro-venda").textContent = "Informe o número da venda a editar.";
+        return;
+      }
+      try {
+        const { resposta, dados } = await chamarApi(`/api/web/records/${id}`);
+        if (!resposta.ok) {
+          $("erro-venda").textContent = dados.erro || "Não foi possível carregar a venda.";
+          return;
+        }
+        prepararEdicao(dados);
+        $("id-carregar").value = "";
+      } catch (erro) {
+        if (!(erro instanceof NaoAutenticado)) $("erro-venda").textContent = "Não foi possível conectar à API.";
+      }
+    });
+
+    $("formulario-venda").addEventListener("submit", async (evento) => {
+      evento.preventDefault();
+      limparErrosVenda();
+      $("sucesso-venda").textContent = "";
+      const { venda, erros } = lerFormularioVenda();
+      if (Object.keys(erros).length) {
+        mostrarErrosVenda(erros);
+        return;
+      }
+      const editando = idEmEdicao !== null;
+      const botao = $("salvar-venda");
+      botao.disabled = true;
+      try {
+        const { resposta, dados } = await chamarApi(editando ? `/api/web/records/${idEmEdicao}` : "/api/web/records", {
+          method: editando ? "PUT" : "POST",
+          body: JSON.stringify(venda),
+        });
+        if (!resposta.ok) {
+          $("erro-venda").textContent = dados.erro || "Não foi possível salvar a venda.";
+          if (dados.campos) mostrarErrosVenda(dados.campos);
+          return;
+        }
+        const resumo = `${dados.quantidade} × ${dados.produto_nome}, total ${moeda.format(dados.valor_total)}`;
+        if (editando) {
+          prepararEdicao(dados);
+          $("sucesso-venda").textContent = `Venda nº ${dados.id} atualizada: ${resumo}.`;
+        } else {
+          prepararNovaVenda();
+          $("sucesso-venda").textContent = `Venda nº ${dados.id} cadastrada: ${resumo}.`;
+        }
+      } catch (erro) {
+        if (!(erro instanceof NaoAutenticado)) $("erro-venda").textContent = "Não foi possível conectar à API.";
+      } finally {
+        botao.disabled = false;
+      }
+    });
+
     function mostrarLogin() {
       sessionStorage.removeItem(CHAVE_TOKEN);
       $("tela-inicial").classList.add("oculto");
@@ -136,6 +399,9 @@
       $("info-usuario").textContent = nome;
       $("info-usuario").classList.remove("oculto");
       $("sair").classList.remove("oculto");
+      prepararNovaVenda();
+      $("sucesso-venda").textContent = "";
+      carregarProdutos();
     }
 
     async function restaurarSessao() {
