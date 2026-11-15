@@ -9,6 +9,8 @@ Execução (via Docker Compose, sem instalar nada no host):
     TOKEN_CLI=<token> docker compose run --rm cli produtos
     TOKEN_CLI=<token> docker compose run --rm cli criar --produto 1 --quantidade 3 --valor-unitario 25.50 --data 2026-10-15
     TOKEN_CLI=<token> docker compose run --rm cli editar 7 --produto 1 --quantidade 5 --valor-unitario 25.50 --data 2026-10-15
+    TOKEN_CLI=<token> docker compose run --rm cli listar --pagina 2 --tamanho 10 --ordenar valor_total --direcao asc
+    TOKEN_CLI=<token> docker compose run --rm cli excluir 7
 """
 
 import argparse
@@ -38,6 +40,17 @@ OPCOES_VENDA = {
     "valor_unitario": "--valor-unitario",
     "data_venda": "--data",
 }
+
+# Parâmetros da listagem na API -> opção da CLI, para mostrar cada erro do 400 junto da opção.
+OPCOES_LISTAGEM = {
+    "pagina": "--pagina",
+    "tamanho": "--tamanho",
+    "ordenar": "--ordenar",
+    "direcao": "--direcao",
+}
+
+# Colunas aceitas em --ordenar (as mesmas chaves que a API aceita em /api/cli/records).
+COLUNAS_ORDENACAO = ("id", "data_venda", "produto_nome", "categoria", "quantidade", "valor_total")
 
 
 class ErroDaApi(Exception):
@@ -257,6 +270,74 @@ def comando_editar(argumentos):
     return SAIDA_SUCESSO
 
 
+def _tabela_de_vendas(vendas):
+    """Linhas da tabela do comando `listar`, com as colunas alinhadas pelo maior valor de cada uma."""
+    cabecalho = ("Nº", "Data", "Produto", "Categoria", "Qtd.", "Valor total")
+    linhas = [
+        (
+            str(venda["id"]),
+            data_brasileira(venda["data_venda"]),
+            venda["produto_nome"],
+            venda["categoria"],
+            str(venda["quantidade"]),
+            moeda(venda["valor_total"]),
+        )
+        for venda in vendas
+    ]
+    larguras = [max(len(linha[coluna]) for linha in (cabecalho, *linhas)) for coluna in range(len(cabecalho))]
+    a_direita = {0, 4, 5}  # números alinhados à direita
+
+    def formatar(linha):
+        return "  ".join(
+            texto.rjust(largura) if coluna in a_direita else texto.ljust(largura)
+            for coluna, (texto, largura) in enumerate(zip(linha, larguras))
+        ).rstrip()
+
+    return [formatar(cabecalho), *(formatar(linha) for linha in linhas)]
+
+
+def comando_listar(argumentos):
+    """Comando protegido: GET /api/cli/records, com página, tamanho e ordenação na query string."""
+    parametros = {
+        campo: valor
+        for campo, valor in (
+            ("pagina", argumentos.pagina),
+            ("tamanho", argumentos.tamanho),
+            ("ordenar", argumentos.ordenar),
+            ("direcao", argumentos.direcao),
+        )
+        if valor is not None
+    }
+    caminho = "/records" + (f"?{urllib.parse.urlencode(parametros)}" if parametros else "")
+    corpo = requisitar("GET", caminho, token=token_do_ambiente())
+    if corpo["vendas"]:
+        print("\n".join(_tabela_de_vendas(corpo["vendas"])))
+    elif corpo["total"] == 0:
+        print("Nenhuma venda cadastrada.")
+    else:
+        print(f"A página {corpo['pagina']} não existe: há {_quantidade(corpo['total_paginas'], 'página', 'páginas')}.")
+        return SAIDA_SUCESSO
+    sentido = "crescente" if corpo["direcao"] == "asc" else "decrescente"
+    print(
+        f"Página {corpo['pagina']} de {corpo['total_paginas']} · {_quantidade(corpo['total'], 'venda', 'vendas')} · "
+        f"{corpo['itens_por_pagina']} por página · ordenado por {corpo['ordenar']} ({sentido})"
+    )
+    return SAIDA_SUCESSO
+
+
+def comando_excluir(argumentos):
+    """Comando protegido: DELETE /api/cli/records/{id}. Pede confirmação, a menos que se use --sim."""
+    token = token_do_ambiente()  # sem token, avisa antes de perguntar qualquer coisa
+    if not argumentos.sim:
+        resposta = perguntar(f"Excluir a venda nº {argumentos.id}? Esta ação não pode ser desfeita. [s/N] ")
+        if resposta.strip().lower() not in ("s", "sim"):
+            print("Exclusão cancelada; nenhuma venda foi excluída.", file=sys.stderr)
+            return SAIDA_ERRO
+    corpo = requisitar("DELETE", f"/records/{urllib.parse.quote(argumentos.id, safe='')}", token=token)
+    print(f"Venda nº {corpo['id']} excluída.")
+    return SAIDA_SUCESSO
+
+
 def _adicionar_campos_venda(parser):
     """As 4 opções obrigatórias da venda, as mesmas do formulário da Web."""
     obrigatorias = parser.add_argument_group("campos da venda (obrigatórios)")
@@ -340,6 +421,32 @@ def criar_parser():
     _adicionar_campos_venda(editar)
     editar.set_defaults(funcao=comando_editar)
 
+    listar = subcomandos.add_parser(
+        "listar",
+        help="lista as vendas com paginação e ordenação (protegido)",
+        description="Lista as vendas, uma página por vez, na ordem escolhida.",
+    )
+    _traduzir_ajuda(listar)
+    listar.add_argument("--pagina", metavar="N", help="número da página (padrão: 1)")
+    listar.add_argument("--tamanho", metavar="N", help="vendas por página, de 1 a 100 (padrão: 10)")
+    listar.add_argument(
+        "--ordenar", choices=COLUNAS_ORDENACAO, metavar="CAMPO",
+        help=f"campo da ordenação: {', '.join(COLUNAS_ORDENACAO)} (padrão: data_venda)",
+    )
+    listar.add_argument(
+        "--direcao", choices=("asc", "desc"), help="asc (crescente) ou desc (decrescente) (padrão: desc)"
+    )
+    listar.set_defaults(funcao=comando_listar)
+
+    excluir = subcomandos.add_parser(
+        "excluir",
+        help="exclui uma venda pelo número (protegido)",
+        description="Exclui uma venda pelo número. Pede confirmação, a menos que se use --sim.",
+    )
+    _traduzir_ajuda(excluir).add_argument("id", help="número da venda (veja o comando 'listar')")
+    excluir.add_argument("-s", "--sim", action="store_true", help="exclui sem pedir confirmação (para scripts)")
+    excluir.set_defaults(funcao=comando_excluir)
+
     return parser
 
 
@@ -360,7 +467,8 @@ def main(argv=None):
     except ErroDaApi as erro:
         print(f"Erro: {erro.mensagem} (HTTP {erro.status})", file=sys.stderr)
         for campo, mensagem in erro.campos.items():
-            print(f"  {OPCOES_VENDA.get(campo, campo)}: {mensagem}", file=sys.stderr)
+            opcao = OPCOES_VENDA.get(campo) or OPCOES_LISTAGEM.get(campo, campo)
+            print(f"  {opcao}: {mensagem}", file=sys.stderr)
         if erro.status == 401 and argumentos.comando != "login":
             print(f"Token ausente, inválido ou expirado. Gere outro com 'login' e atualize {VARIAVEL_TOKEN}.", file=sys.stderr)
         return SAIDA_NAO_AUTENTICADO if erro.status == 401 else SAIDA_ERRO
