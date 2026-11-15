@@ -36,6 +36,10 @@ FUSO_HORARIO_PADRAO = "America/Fortaleza"
 ITENS_POR_PAGINA = 5
 PAGINA_MAXIMA = 100_000
 
+# Listagem da CLI (#9): o tamanho da página é configurável, de 1 a TAMANHO_MAXIMO_CLI.
+TAMANHO_PADRAO_CLI = 10
+TAMANHO_MAXIMO_CLI = 100
+
 # Hash usado quando o usuário não existe, para o login levar o mesmo tempo nos dois casos
 # e não revelar quais usuários estão cadastrados.
 HASH_FICTICIO = generate_password_hash("senha-ficticia")
@@ -470,12 +474,16 @@ def ler_pagina(texto):
     return ler_inteiro_positivo(texto, PAGINA_MAXIMA)
 
 
-def ler_ordenacao(erros):
-    """Lê `ordenar` e `direcao` da query string, anotando os inválidos em `erros`."""
+def ler_ordenacao(erros, colunas=None):
+    """Lê `ordenar` e `direcao` da query string, anotando os inválidos em `erros`.
+
+    `colunas` são as chaves de ordenação aceitas pelo cliente da rota (padrão: as da Web).
+    """
+    colunas = db.COLUNAS_ORDENACAO_WEB if colunas is None else colunas
     ordenar = request.args.get("ordenar", "data_venda")
     direcao = request.args.get("direcao", "desc")
-    if ordenar not in db.COLUNAS_ORDENACAO_WEB:
-        erros["ordenar"] = f"Ordene por: {', '.join(db.COLUNAS_ORDENACAO_WEB)}."
+    if ordenar not in colunas:
+        erros["ordenar"] = f"Ordene por: {', '.join(colunas)}."
     if direcao not in ("asc", "desc"):
         erros["direcao"] = "A direção deve ser asc ou desc."
     return ordenar, direcao
@@ -491,7 +499,7 @@ def ler_paginacao(erros):
 
 
 def resposta_parametros_invalidos(operacao, erros):
-    registrar_log("WARN", "web", operacao, "error", f"Parâmetros inválidos: {', '.join(sorted(erros))}")
+    registrar_log("WARN", origem_da_requisicao(), operacao, "error", f"Parâmetros inválidos: {', '.join(sorted(erros))}")
     return jsonify(erro="Parâmetros inválidos.", campos=erros), 400
 
 
@@ -706,6 +714,56 @@ def web_excluir_venda(id_venda):
     if not excluida:
         return resposta_venda_nao_encontrada("excluir_venda", id_venda)
     registrar_log("INFO", "web", "excluir_venda", "success", f"Venda {id_venda} excluída")
+    return jsonify(id=id_venda, mensagem="Venda excluída."), 200
+
+
+@app.get("/api/cli/records")
+@exigir_autenticacao_cli("listar_vendas")
+def cli_listar_vendas():
+    erros = {}
+    pagina = ler_pagina(request.args.get("pagina", "1"))
+    if pagina is None:
+        erros["pagina"] = f"A página deve ser um número inteiro entre 1 e {PAGINA_MAXIMA}."
+    tamanho = ler_inteiro_positivo(request.args.get("tamanho", str(TAMANHO_PADRAO_CLI)), TAMANHO_MAXIMO_CLI)
+    if tamanho is None:
+        erros["tamanho"] = f"O tamanho da página deve ser um número inteiro entre 1 e {TAMANHO_MAXIMO_CLI}."
+    ordenar, direcao = ler_ordenacao(erros, db.COLUNAS_ORDENACAO_CLI)
+    if erros:
+        return resposta_parametros_invalidos("listar_vendas", erros)
+
+    try:
+        linhas, total = db.listar_vendas_cli(pagina, tamanho, ordenar, direcao, g.request_id)
+    except psycopg.Error:
+        return resposta_falha_no_banco("listar_vendas")
+    total_paginas = max(1, -(-total // tamanho))
+    registrar_log("INFO", "cli", "listar_vendas", "success", f"Página {pagina} de {total_paginas} listada")
+    return (
+        jsonify(
+            vendas=[venda_para_json(linha) for linha in linhas],
+            pagina=pagina,
+            itens_por_pagina=tamanho,
+            total=total,
+            total_paginas=total_paginas,
+            ordenar=ordenar,
+            direcao=direcao,
+        ),
+        200,
+    )
+
+
+@app.delete("/api/cli/records/<id_venda>")
+@exigir_autenticacao_cli("excluir_venda")
+def cli_excluir_venda(id_venda):
+    id_venda, erro = ler_id_venda(id_venda, "excluir_venda")
+    if erro:
+        return erro
+    try:
+        excluida = db.excluir_venda_cli(id_venda, g.request_id)
+    except psycopg.Error:
+        return resposta_falha_no_banco("excluir_venda")
+    if not excluida:
+        return resposta_venda_nao_encontrada("excluir_venda", id_venda)
+    registrar_log("INFO", "cli", "excluir_venda", "success", f"Venda {id_venda} excluída")
     return jsonify(id=id_venda, mensagem="Venda excluída."), 200
 
 

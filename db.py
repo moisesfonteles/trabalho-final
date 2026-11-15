@@ -436,6 +436,67 @@ def excluir_venda_web(id_venda, request_id):
     return True
 
 
+# Listagem e exclusão pela CLI (#9). Consultas próprias da CLI, separadas das da Web.
+# Colunas pelas quais a listagem da CLI pode ser ordenada (nome do parâmetro -> coluna SQL).
+# A API só aceita essas chaves, então nenhum texto do usuário entra na consulta.
+COLUNAS_ORDENACAO_CLI = {
+    "id": "venda.id",
+    "data_venda": "venda.data_venda",
+    "produto_nome": "produto.nome",
+    "categoria": "produto.categoria",
+    "quantidade": "venda.quantidade",
+    "valor_total": "venda.valor_total",
+}
+
+
+def listar_vendas_cli(pagina, tamanho, ordenar, direcao, request_id):
+    """Retorna (vendas da página, total de vendas) para o comando `listar` da CLI.
+
+    `tamanho` é o número de vendas por página, escolhido por quem usa a CLI. `ordenar` deve ser uma
+    chave de COLUNAS_ORDENACAO_CLI e `direcao`, "asc" ou "desc". O id desempata a ordenação, para a
+    paginação ser estável.
+    """
+    sentido = sql.SQL("DESC" if direcao == "desc" else "ASC")
+    consulta = sql.SQL(
+        """
+        SELECT venda.id, venda.produto_id, produto.nome AS produto_nome, produto.categoria,
+               venda.quantidade, venda.valor_unitario, venda.valor_total, venda.data_venda
+        FROM venda JOIN produto ON produto.id = venda.produto_id
+        ORDER BY {coluna} {sentido}, venda.id {sentido}
+        LIMIT %s OFFSET %s
+        """
+    ).format(coluna=sql.SQL(COLUNAS_ORDENACAO_CLI[ordenar]), sentido=sentido)
+    try:
+        with obter_conexao() as conexao:
+            # A contagem e a página veem o mesmo snapshot, então o total bate com as linhas devolvidas.
+            conexao.isolation_level = psycopg.IsolationLevel.REPEATABLE_READ
+            conexao.read_only = True
+            total = conexao.execute("SELECT COUNT(*) AS total FROM venda").fetchone()["total"]
+            linhas = conexao.execute(consulta, (tamanho, (pagina - 1) * tamanho)).fetchall()
+    except psycopg.Error:
+        registrar_log("ERROR", "cli", "listar_vendas", "error", request_id, "Falha ao listar vendas")
+        raise
+    registrar_log(
+        "INFO", "cli", "listar_vendas", "success", request_id, f"Página {pagina}: {len(linhas)} de {total} vendas"
+    )
+    return linhas, total
+
+
+def excluir_venda_cli(id_venda, request_id):
+    """Exclui a venda pelo comando `excluir` da CLI. Retorna True se ela existia, False se não existia."""
+    try:
+        with obter_conexao() as conexao:
+            excluida = conexao.execute("DELETE FROM venda WHERE id = %s RETURNING id", (id_venda,)).fetchone()
+    except psycopg.Error:
+        registrar_log("ERROR", "cli", "excluir_venda", "error", request_id, "Falha ao excluir venda")
+        raise
+    if excluida is None:
+        registrar_log("WARN", "cli", "excluir_venda", "error", request_id, f"Venda {id_venda} não encontrada")
+        return False
+    registrar_log("INFO", "cli", "excluir_venda", "success", request_id, f"Venda {id_venda} excluída")
+    return True
+
+
 # Indicadores do dashboard da Web (#6). Consultas próprias, lidas no mesmo snapshot.
 MESES_DASHBOARD = 12
 TOP_PRODUTOS_DASHBOARD = 5
