@@ -524,6 +524,82 @@ Cada operação registra uma linha na camada `api` e outra na camada `db`, com `
 docker compose logs api | grep '"client": "cli"' | grep -E 'criar_venda|editar_venda'
 ```
 
+## #9 — Listagem paginada, ordenação e exclusão pela CLI
+
+A CLI lista as vendas uma página por vez, na ordem escolhida, e exclui vendas pelo número. Os dois comandos são protegidos (exigem o `TOKEN_CLI` obtido com `login`, seção #7), usam rotas próprias da CLI e consultas SQL próprias da CLI (`listar_vendas_cli` e `excluir_venda_cli` no `db.py`). A CLI não acessa o banco: uma venda excluída pela CLI some da Web na hora, porque as duas usam o mesmo banco pela API.
+
+### Comandos
+
+| Subcomando | Rota | O que faz |
+|---|---|---|
+| `listar [--pagina N] [--tamanho N] [--ordenar CAMPO] [--direcao asc\|desc]` | `GET /api/cli/records` | Lista as vendas com paginação e ordenação |
+| `excluir ID [--sim]` | `DELETE /api/cli/records/{id}` | Exclui a venda nº `ID` |
+
+| Opção de `listar` | Valores | Padrão |
+|---|---|---|
+| `--pagina` | inteiro de 1 a 100000 | `1` |
+| `--tamanho` | vendas por página, inteiro de 1 a 100 | `10` |
+| `--ordenar` | `id`, `data_venda`, `produto_nome`, `categoria`, `quantidade`, `valor_total` | `data_venda` |
+| `--direcao` | `asc` (crescente) ou `desc` (decrescente) | `desc` |
+
+Em caso de empate na coluna escolhida, o número da venda desempata, então nenhuma venda se repete ou some entre as páginas. A contagem e a página são lidas na mesma transação, então o total do rodapé sempre bate com as vendas mostradas.
+
+O `excluir` **pede confirmação** (`[s/N]`) antes de apagar, porque a exclusão não pode ser desfeita. Em scripts, ou com `docker compose run -T` (sem terminal para responder), use `--sim` (ou `-s`) para excluir sem perguntar; sem `--sim` e sem terminal, a exclusão é cancelada.
+
+### Exemplos
+
+```bash
+export TOKEN_CLI='<token impresso pelo login>'   # veja a seção #7
+docker compose run --rm cli listar
+docker compose run --rm cli listar --pagina 2 --tamanho 5 --ordenar valor_total --direcao asc
+docker compose run --rm cli excluir 3            # pergunta antes de excluir
+docker compose run --rm -T cli excluir 3 --sim   # sem perguntar
+```
+
+```text
+Nº  Data        Produto            Categoria  Qtd.  Valor total
+ 3  03/10/2026  Biscoito recheado  Alimentos     4     R$ 38,00
+ 4  04/10/2026  Refrigerante 2 L   Bebidas       5     R$ 62,50
+ 7  07/10/2026  Detergente 500 ml  Limpeza       3     R$ 64,50
+11  11/10/2026  Creme dental       Higiene       2     R$ 67,00
+ 8  08/10/2026  Sabão em pó 1 kg   Limpeza       4     R$ 98,00
+Página 2 de 3 · 12 vendas · 5 por página · ordenado por valor_total (crescente)
+
+Excluir a venda nº 3? Esta ação não pode ser desfeita. [s/N] s
+Venda nº 3 excluída.
+```
+
+Sem vendas, `listar` mostra "Nenhuma venda cadastrada."; uma página além da última mostra "A página 9 não existe: há 3 páginas.". Os erros vão para o stderr, sem traceback, com o nome da opção que causou cada um:
+
+```text
+$ docker compose run --rm cli listar --pagina 0 --tamanho 500
+Erro: Parâmetros inválidos. (HTTP 400)
+  --pagina: A página deve ser um número inteiro entre 1 e 100000.
+  --tamanho: O tamanho da página deve ser um número inteiro entre 1 e 100.
+
+$ docker compose run --rm cli excluir 999 --sim
+Erro: Venda não encontrada. (HTTP 404)
+```
+
+Códigos de saída: `0` sucesso; `1` erro da API (parâmetro inválido, venda inexistente) ou exclusão cancelada; `2` uso incorreto (ex.: `--ordenar preco`, `--direcao cima`); `3` sem token ou token inválido.
+
+### Endpoints desta issue
+
+Exigem `Authorization: Bearer <token da CLI>`; sem token, com token inválido ou com token da Web respondem `401`.
+
+| Método | Rota | Resposta |
+|---|---|---|
+| GET | `/api/cli/records?pagina=&tamanho=&ordenar=&direcao=` | `200 {"vendas", "pagina", "itens_por_pagina", "total", "total_paginas", "ordenar", "direcao"}`; `400 {"erro", "campos"}` com parâmetros inválidos |
+| DELETE | `/api/cli/records/{id}` | `200 {"id", "mensagem"}`; `400` número inválido; `404` venda inexistente |
+
+### Logs
+
+A listagem (leitura) e a exclusão registram uma linha na camada `api` e outra na camada `db`, com `client: "cli"` e o mesmo `request_id`. Os valores de `operation` são `listar_vendas` e `excluir_venda`. Excluir uma venda inexistente gera `WARN` nas duas camadas; parâmetros ou número inválidos são recusados antes do banco, com `WARN` só na camada `api`; falha no banco gera `ERROR`.
+
+```bash
+docker compose logs api | grep '"client": "cli"' | grep -E 'listar_vendas|excluir_venda'
+```
+
 ## Logs
 
 Cada evento é uma linha JSON no stdout, com `timestamp`, `level`, `layer` (`api`/`db`), `client` (`web`/`cli`), `operation`, `status`, `request_id` e `message`. API e banco compartilham o mesmo `request_id` dentro de uma requisição (também devolvido no header `X-Request-ID`). A inicialização do banco usa `client: "sistema"` e `request_id: "inicializacao"`. Erros não previstos na API viram `500 {"erro": "Erro interno"}` com log `ERROR`. Nas rotas `/api/*`, rota inexistente e método não permitido também respondem em JSON (`404 {"erro": "Rota não encontrada"}`, `405 {"erro": "Método não permitido"}`, este com o header `Allow`), com log `WARN` e o `client` da rota (`cli` em `/api/cli/*`).
