@@ -362,10 +362,21 @@ def test_excluir_sem_confirmar_nao_exclui(com_token, sete_vendas, monkeypatch, c
     assert db.excluir_venda_cli(sete_vendas[0], "req-conferencia") is True  # ainda existia
 
 
-def test_excluir_sem_terminal_cancela(com_token, sete_vendas, monkeypatch, capsys):
+def test_excluir_sem_terminal_cancela_com_a_mesma_mensagem(com_token, sete_vendas, monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO(""))  # EOF, como no `docker compose run -T` sem --sim
     assert cli.main(["excluir", str(sete_vendas[0])]) == cli.SAIDA_ERRO
-    assert "Cancelado." in _saida(capsys)[1]
+    assert "Exclusão cancelada; nenhuma venda foi excluída." in _saida(capsys)[1]
+    assert db.excluir_venda_cli(sete_vendas[0], "req-conferencia") is True  # ainda existia
+
+
+def test_excluir_com_ctrl_c_cancela_com_a_mesma_mensagem(com_token, sete_vendas, monkeypatch, capsys):
+    def interromper(_mensagem):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "perguntar", interromper)
+    assert cli.main(["excluir", str(sete_vendas[0])]) == cli.SAIDA_ERRO
+    assert "Exclusão cancelada; nenhuma venda foi excluída." in _saida(capsys)[1]
+    assert db.excluir_venda_cli(sete_vendas[0], "req-conferencia") is True  # ainda existia
 
 
 @pytest.mark.parametrize("opcao", ["--sim", "-s"])

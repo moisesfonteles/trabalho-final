@@ -28,7 +28,8 @@ URL_API_PADRAO = "http://api:8000"
 TEMPO_LIMITE = 10  # segundos
 VARIAVEL_TOKEN = "TOKEN_CLI"
 
-# Códigos de saída: 0 sucesso, 1 erro da API ou de conexão, 2 uso incorreto (argparse), 3 não autenticado.
+# Códigos de saída: 0 sucesso, 1 erro da API ou de conexão ou operação cancelada, 2 uso incorreto (argparse),
+# 3 não autenticado.
 SAIDA_SUCESSO = 0
 SAIDA_ERRO = 1
 SAIDA_NAO_AUTENTICADO = 3
@@ -329,7 +330,12 @@ def comando_excluir(argumentos):
     """Comando protegido: DELETE /api/cli/records/{id}. Pede confirmação, a menos que se use --sim."""
     token = token_do_ambiente()  # sem token, avisa antes de perguntar qualquer coisa
     if not argumentos.sim:
-        resposta = perguntar(f"Excluir a venda nº {argumentos.id}? Esta ação não pode ser desfeita. [s/N] ")
+        try:
+            resposta = perguntar(f"Excluir a venda nº {argumentos.id}? Esta ação não pode ser desfeita. [s/N] ")
+        except (EOFError, KeyboardInterrupt):
+            # Sem terminal (`docker compose run -T` sem --sim) ou Ctrl+C: vale como "não", com a mesma mensagem.
+            print(file=sys.stderr)
+            resposta = ""
         if resposta.strip().lower() not in ("s", "sim"):
             print("Exclusão cancelada; nenhuma venda foi excluída.", file=sys.stderr)
             return SAIDA_ERRO
