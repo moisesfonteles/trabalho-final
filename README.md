@@ -403,7 +403,7 @@ O `cli` não tem build próprio: usa a mesma imagem do serviço `api` (`<projeto
 | `login [--usuario U]` | `POST /api/cli/token` | usuário e senha | Obtém um token de acesso |
 | `sessao` | `GET /api/cli/sessao` | Bearer (`TOKEN_CLI`) | Mostra o usuário dono do token |
 
-Códigos de saída: `0` sucesso, `1` erro da API ou API fora do ar, `2` uso incorreto (subcomando ou opção inválidos), `3` não autenticado (sem token, token inválido/expirado ou credenciais inválidas).
+Códigos de saída: `0` sucesso, `1` erro da API, API fora do ar ou operação cancelada (ex.: exclusão não confirmada), `2` uso incorreto (subcomando ou opção inválidos), `3` não autenticado (sem token, token inválido/expirado ou credenciais inválidas).
 
 Erros são mostrados numa linha no stderr, sem traceback: `Erro: <mensagem da API> (HTTP <status>)` quando a API responde com erro, e `Erro: não foi possível conectar à API em <URL_API> (<motivo>)` quando ela está fora do ar ou a resposta não é da API (não é HTTP, não é um objeto JSON, veio cortada).
 
@@ -544,7 +544,7 @@ A CLI lista as vendas uma página por vez, na ordem escolhida, e exclui vendas p
 
 Em caso de empate na coluna escolhida, o número da venda desempata, então nenhuma venda se repete ou some entre as páginas. A contagem e a página são lidas na mesma transação, então o total do rodapé sempre bate com as vendas mostradas.
 
-O `excluir` **pede confirmação** (`[s/N]`) antes de apagar, porque a exclusão não pode ser desfeita. Em scripts, ou com `docker compose run -T` (sem terminal para responder), use `--sim` (ou `-s`) para excluir sem perguntar; sem `--sim` e sem terminal, a exclusão é cancelada.
+O `excluir` **pede confirmação** (`[s/N]`) antes de apagar, porque a exclusão não pode ser desfeita. Em scripts, ou com `docker compose run -T` (sem terminal para responder), use `--sim` (ou `-s`) para excluir sem perguntar. Qualquer resposta que não seja `s`/`sim`, a falta de terminal sem `--sim` ou Ctrl+C cancelam a exclusão com a mesma mensagem: "Exclusão cancelada; nenhuma venda foi excluída." (código `1`).
 
 ### Exemplos
 
